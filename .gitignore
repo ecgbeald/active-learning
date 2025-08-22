@@ -1,0 +1,14 @@
+evaluation*.txt
+__pycache__
+*.csv
+*.ipynb
+*.log
+bgl
+event_tokenizer
+hdfs_v1
+numeric_tokenizer
+pretrained_classifier
+thunderbird
+*.json
+*.txt
+model.safetensors
