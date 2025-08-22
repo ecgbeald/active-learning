@@ -49,7 +49,6 @@ with open(output_file, "w") as f:
 print(f"Using device: {device}")
 
 processed_df = process_csv("microsoft/guide_alerts.csv")
-processed_df = processed_df.head(500_000)
 
 raw_dataset = {
     "combined": processed_df["combined"].tolist(),
@@ -75,7 +74,7 @@ X_entries = df_subset["combined"].values
 y_entries = df_subset["label"].values
 train_dataset = ALDataset(X_entries, y_entries, tokenizer)
 
-batch_size = 128
+batch_size = 64
 train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
 
 model = ALClassifier(
@@ -88,7 +87,7 @@ model = ALClassifier(
 )
 
 model = model.to(device)
-EPOCHS = 20
+EPOCHS = 15
 LEARNING_RATE = 2e-5
 WEIGHT_DECAY = 0.01
 
@@ -215,7 +214,7 @@ transformer_model = TransformerModelArguments(model_save_path)
 clf_factory = TransformerBasedClassificationFactory(
     transformer_model,
     num_classes,
-    kwargs=dict({"device": "cuda", "mini_batch_size": 256, "class_weight": "balanced"}),
+    kwargs=dict({"device": "cuda", "mini_batch_size": 64, "class_weight": "balanced"}),
 )
 query_strategy = EmbeddingKMeans()
 

@@ -15,18 +15,7 @@ def process_csv(input_csv_path):
     # Read the input CSV
     print(f"Reading CSV from: {input_csv_path}")
     df = pd.read_csv(input_csv_path)
-    df_1 = df[df["label"] == 1]
-    df_0 = df[df["label"] == 0]
-    n = 1_000_000
-    df_1_sampled = df_1.sample(n=min(n, len(df_1)), random_state=42)
-    df_0_sampled = df_0.sample(n=min(n, len(df_0)), random_state=42)
-    df = (
-        pd.concat([df_1_sampled, df_0_sampled])
-        .sample(frac=1, random_state=42)
-        .reset_index(drop=True)
-    )
-    print(f"Original shape: {df.shape}")
-
+    df = df.head(500_000)
     # Standardize column names
     # df.rename(columns={
     #     'time': 'timestamp',

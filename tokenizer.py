@@ -1,6 +1,30 @@
 from utils import process_csv
 from transformers import PreTrainedTokenizerFast
 from tokenizers import Tokenizer, models, pre_tokenizers, trainers, processors
+import json
+import os
+
+
+def generate_bert_vocab_file(tokenizer, output_path="./numeric_tokenizer/vocab.txt"):
+    """
+    Generate a vocabulary file compatible with BERT models.
+    BERT expects a vocab.txt file with one token per line, ordered by token ID.
+    """
+    vocab = tokenizer.get_vocab()
+    print(f"Vocabulary size: {len(vocab)}")
+
+    # Sort tokens by their IDs (BERT expects tokens in ID order)
+    sorted_vocab = sorted(vocab.items(), key=lambda x: x[1])
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    with open(output_path, "w", encoding="utf-8") as f:
+        for token, token_id in sorted_vocab:
+            f.write(f"{token}\n")
+
+    json_path = output_path.replace(".txt", ".json")
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(vocab, f, ensure_ascii=False, indent=2)
+
+    return output_path, json_path
 
 
 def create_numeric_tokenizer_with_priority(processed_df, vocab_size=10000):
@@ -79,5 +103,6 @@ hf_tokenizer.add_special_tokens(
         "sep_token": "[SEP]",
     }
 )
-
 hf_tokenizer.save_pretrained("./numeric_tokenizer")
+
+_, _ = generate_bert_vocab_file(hf_tokenizer)
