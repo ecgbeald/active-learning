@@ -49,6 +49,7 @@ with open(output_file, "w") as f:
 print(f"Using device: {device}")
 
 processed_df = process_csv("microsoft/guide_alerts.csv")
+processed_df = processed_df.head(500_000)
 
 raw_dataset = {
     "combined": processed_df["combined"].tolist(),
