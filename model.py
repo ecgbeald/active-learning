@@ -37,9 +37,20 @@ class ALDataset(Dataset):
 
 class ALClassifier(nn.Module):
     def __init__(
-        self, vocab_size, hidden_size=256, num_layers=4, num_classes=2, max_length=10
+        self,
+        vocab_size,
+        hidden_size=256,
+        num_layers=4,
+        num_classes=2,
+        num_attention_heads=4,
+        max_length=10,
     ):
         super(ALClassifier, self).__init__()
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
+        self.num_classes = num_classes
+        self.num_attention_heads = num_attention_heads
+        self.max_length = max_length
 
         config = BertConfig(
             vocab_size=vocab_size,
