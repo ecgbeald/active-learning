@@ -56,7 +56,8 @@ raw_dataset = {
 }
 num_classes = 2
 
-tokenizer = AutoTokenizer.from_pretrained("numeric_tokenizer")
+tokenizer_path = "./numeric_tokenizer"
+tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
 target_labels = np.arange(num_classes)
 
 # select 1000 samples to train pretrained model (500 from each class)
@@ -162,7 +163,14 @@ torch.save(
     os.path.join(model_save_path, "pytorch_model.bin"),
 )
 
-# Save model configuration
+# copy the vocab.txt from tokenizer
+src = os.path.join(tokenizer_path, "vocab.txt")
+dst = os.path.join(model_save_path, "vocab.txt")
+
+with open(src, "rb") as f_src:
+    with open(dst, "wb") as f_dst:
+        f_dst.write(f_src.read())
+
 model_config = {
     "vocab_size": tokenizer.vocab_size,
     "hidden_size": model.hidden_size,
@@ -175,20 +183,6 @@ model_config = {
 
 with open(os.path.join(model_save_path, "config.json"), "w") as f:
     json.dump(model_config, f, indent=2)
-
-training_history = {
-    "train_losses": train_losses,
-    "train_accuracies": train_accuracies,
-    # 'val_losses': val_losses,
-    # 'val_accuracies': val_accuracies,
-    "best_train_accuracy": best_train_accuracy,
-    "epochs": EPOCHS,
-    "learning_rate": LEARNING_RATE,
-    "batch_size": batch_size,
-}
-
-with open(os.path.join(model_save_path, "training_history.json"), "w") as f:
-    json.dump(training_history, f, indent=2)
 
 
 rest_dataset = TransformersDataset.from_arrays(
