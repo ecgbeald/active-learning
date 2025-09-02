@@ -1,68 +1,66 @@
-from utils import process_csv
+from utils import process_seq
 from transformers import PreTrainedTokenizerFast
-from tokenizers import Tokenizer, models, pre_tokenizers, trainers, processors
+from tokenizers import Tokenizer, models, pre_tokenizers, trainers, normalizers
 import json
 import os
 
 
-def generate_bert_vocab_file(tokenizer, output_path="./numeric_tokenizer/vocab.txt"):
-    """
-    Generate a vocabulary file compatible with BERT models.
-    BERT expects a vocab.txt file with one token per line, ordered by token ID.
-    """
+def generate_bert_vocab_file(tokenizer, output_path="./numeric_tokenizer"):
     vocab = tokenizer.get_vocab()
-    print(f"Vocabulary size: {len(vocab)}")
 
-    # Sort tokens by their IDs (BERT expects tokens in ID order)
     sorted_vocab = sorted(vocab.items(), key=lambda x: x[1])
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    with open(output_path, "w", encoding="utf-8") as f:
-        for token, token_id in sorted_vocab:
+    vocab_file = os.path.join(output_path, "vocab.txt")
+    os.makedirs(os.path.dirname(vocab_file), exist_ok=True)
+    with open(vocab_file, "w", encoding="utf-8") as f:
+        for token, _ in sorted_vocab:
             f.write(f"{token}\n")
 
-    json_path = output_path.replace(".txt", ".json")
+    json_path = vocab_file.replace(".txt", ".json")
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(vocab, f, ensure_ascii=False, indent=2)
 
-    return output_path, json_path
+    return vocab_file, json_path
 
 
 def create_numeric_tokenizer_with_priority(processed_df, vocab_size=10000):
     tokenizer = Tokenizer(models.WordPiece())
     special_tokens = ["[PAD]", "[UNK]", "[CLS]", "[SEP]"]
-    tokenizer.pre_tokenizer = pre_tokenizers.Whitespace()
 
-    # Get frequency counts for events and machines - prioritise most frequent ones
+    tokenizer.normalizer = normalizers.Sequence([])
+
+    special_token_pattern = r"\[CLS\]|\[SEP\]|\[PAD\]|\[UNK\]"
+
+    tokenizer.pre_tokenizer = pre_tokenizers.Sequence(
+        [
+            pre_tokenizers.Split(pattern=special_token_pattern, behavior="isolated"),
+            pre_tokenizers.Whitespace(),
+        ]
+    )
+
     event_counts = processed_df["event"].value_counts()
-    machine_counts = processed_df["machine"].value_counts()
-
-    # print(f"Found {len(event_counts)} unique events and {len(machine_counts)} unique machines")
-    # print(f"Target vocabulary size: {vocab_size}")
+    # machine_counts = processed_df["machine"].value_counts()
 
     reserved_tokens = (
         len(special_tokens) + 1000
     )  # Reserve 1000 for general number tokens
     available_for_priority = vocab_size - reserved_tokens
 
-    total_unique = len(event_counts) + len(machine_counts)
+    total_unique = len(event_counts)  # + len(machine_counts)
 
     if total_unique <= available_for_priority:
-        # We can include all events and machines
         top_events = event_counts.index.tolist()
-        top_machines = machine_counts.index.tolist()
+        # top_machines = machine_counts.index.tolist()
     else:
-        # Need to select top most frequent ones
-        # Split available space between events and machines proportionally
         event_ratio = len(event_counts) / total_unique
         top_events_count = int(available_for_priority * event_ratio)
-        top_machines_count = available_for_priority - top_events_count
+        # top_machines_count = available_for_priority - top_events_count
 
         top_events = event_counts.head(top_events_count).index.tolist()
-        top_machines = machine_counts.head(top_machines_count).index.tolist()
+        # top_machines = machine_counts.head(top_machines_count).index.tolist()
 
     priority_tokens = []
     priority_tokens.extend([str(event) for event in top_events])
-    priority_tokens.extend([str(machine) for machine in top_machines])
+    # priority_tokens.extend([str(machine) for machine in top_machines])
 
     priority_tokens = sorted(list(set(priority_tokens)))
     print(f"Created {len(priority_tokens)} priority tokens")
@@ -72,37 +70,44 @@ def create_numeric_tokenizer_with_priority(processed_df, vocab_size=10000):
         vocab_size=vocab_size, special_tokens=all_special_tokens, min_frequency=1
     )
 
-    return tokenizer, trainer, priority_tokens, top_events, top_machines
+    return tokenizer, trainer, priority_tokens, top_events
 
 
-processed_df = process_csv("microsoft/guide_alerts.csv")
+def preprocess_text_for_special_tokens(text_series):
+    processed_texts = []
+    for text in text_series:
+        processed_text = text.replace("[SEP]", " [SEP] ").replace("[CLS]", " [CLS] ")
+        processed_text = " ".join(processed_text.split())
+        processed_texts.append(processed_text)
+    return processed_texts
 
-tokenizer, trainer, priority_tokens, top_events, top_machines = (
-    create_numeric_tokenizer_with_priority(processed_df, vocab_size=10000)
-)
 
-unique_combined_texts = processed_df["combined"].unique()
+def tokenize(df, window_size=5, save_path="./numeric_tokenizer"):
+    processed_df = process_seq(df, window_size)
+    tokenize_alt(processed_df, df, save_path)
 
-tokenizer.train_from_iterator(unique_combined_texts, trainer)
 
-tokenizer.post_processor = processors.TemplateProcessing(
-    single="[CLS] $A [SEP]",
-    pair="[CLS] $A [SEP] $B:1 [SEP]:1",
-    special_tokens=[
-        ("[CLS]", 2),
-        ("[SEP]", 3),
-    ],
-)
+def tokenize_alt(processed_df, events, save_path="./numeric_tokenizer"):
+    has_special_tokens = any(
+        "[SEP]" in text or "[CLS]" in text for text in processed_df["combined"]
+    )
+    if has_special_tokens:
+        training_texts = preprocess_text_for_special_tokens(processed_df["combined"])
+    else:
+        training_texts = processed_df["combined"].tolist()
+    tokenizer, trainer, _, _ = create_numeric_tokenizer_with_priority(
+        events, vocab_size=10000
+    )
+    tokenizer.train_from_iterator(training_texts, trainer)
+    hf_tokenizer = PreTrainedTokenizerFast(tokenizer_object=tokenizer)
+    hf_tokenizer.add_special_tokens(
+        {
+            "pad_token": "[PAD]",
+            "unk_token": "[UNK]",
+            "cls_token": "[CLS]",
+            "sep_token": "[SEP]",
+        }
+    )
 
-hf_tokenizer = PreTrainedTokenizerFast(tokenizer_object=tokenizer)
-hf_tokenizer.add_special_tokens(
-    {
-        "pad_token": "[PAD]",
-        "unk_token": "[UNK]",
-        "cls_token": "[CLS]",
-        "sep_token": "[SEP]",
-    }
-)
-hf_tokenizer.save_pretrained("./numeric_tokenizer")
-
-_, _ = generate_bert_vocab_file(hf_tokenizer)
+    hf_tokenizer.save_pretrained(save_path)
+    _, _ = generate_bert_vocab_file(hf_tokenizer, save_path)

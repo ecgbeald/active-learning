@@ -1,57 +1,73 @@
 import pandas as pd
 
 
-def process_csv(input_csv_path):
-    """
-    Process raw alert CSV files into standardised format.
+def slice_dataframe(df, start, end):
+    return df.iloc[start:end].reset_index(drop=True)
 
-    Args:
-        input_csv_path (str): Path to the input CSV file in alerts_csv directory
 
-    Returns:
-        pd.DataFrame: The processed dataframe
-    """
+def build_event_windows(event_sequences, window_size=10, stride=1):
+    windows = []
 
-    # Read the input CSV
-    print(f"Reading CSV from: {input_csv_path}")
-    df = pd.read_csv(input_csv_path)
-    df = df.head(500_000)
-    # Standardize column names
-    # df.rename(columns={
-    #     'time': 'timestamp',
-    #     'name': 'event',
-    #     'host': 'machine',
-    # }, inplace=True)
+    for machine_id, (events, timestamps, labels) in event_sequences.items():
+        if len(events) >= window_size:
+            for i in range(0, len(events) - window_size + 1, stride):
+                window = events[i : i + window_size]
+                window_timestamps = timestamps[i : i + window_size]
 
-    # unique_events = df['event'].unique()
-    # event_map = {evt: idx + 1 for idx, evt in enumerate(unique_events)}
-    # df['event'] = df['event'].map(event_map)
-    # unique_machines = df['machine'].unique()
-    # machines_map = {mac: idx + 1 for idx, mac in enumerate(unique_machines)}
-    # df['machine'] = df['machine'].map(machines_map)
+                # if timestamp diff > 30s, ignore
+                if window_timestamps[-1] - window_timestamps[0] > 30:
+                    continue
 
-    # # Create binary label column (0=normal, 1=anomalous)
-    # df['label'] = df['event_label'].apply(lambda x: 0 if x == '-' else 1)
+                windows.append(
+                    {
+                        "machine_id": machine_id,
+                        "events": window,
+                        "timestamp": window_timestamps,
+                        "label": labels[i : i + window_size],
+                    }
+                )
+        else:
+            # if timestamp diff > 30s, ignore
+            if timestamps[-1] - timestamps[0] <= 30:
+                windows.append(
+                    {
+                        "machine_id": machine_id,
+                        "events": events,
+                        "timestamp": timestamps,
+                        "label": labels,
+                    }
+                )
+    return windows
 
-    # # Drop unnecessary columns
-    # df.drop(columns=['event_label', 'time_label', 'short', 'ip'], inplace=True)
 
-    # # Create output directory if it doesn't exist
-
-    # df.sort_values(by=['timestamp'], inplace=True)
-    # min_timestamp = df['timestamp'].min()
-    # df['timestamp'] = df['timestamp'] - min_timestamp
-    df["combined"] = (
-        df["timestamp"].astype(str)
-        + " "
-        + df["event"].astype(str)
-        + " "
-        + df["machine"].astype(str)
+def process_seq(df, window_size=5, slice_start=0, slice_end=None):
+    df = slice_dataframe(df, slice_start, slice_end)
+    event_sequences = (
+        df.groupby("machine")
+        .agg({"event": list, "timestamp": list, "label": list})
+        .reset_index()
     )
-    print(f"Final shape: {df.shape}")
-    print(f"Unique events: {len(df['event'].unique())}")
-    print(f"Unique machines: {len(df['machine'].unique())}")
-    print(
-        f"Normal/Anomalous distribution: {sum(df['label'] == 0)}/{sum(df['label'] == 1)}"
+    event_sequences["event_count"] = event_sequences["event"].apply(len)
+    event_sequences = event_sequences[event_sequences["event_count"] >= window_size]
+    event_sequences_dict = {}
+    for _, row in event_sequences.iterrows():
+        machine_id = row["machine"]
+        events = row["event"]
+        timestamps = row["timestamp"]
+        labels = row["label"]
+        if len(events) >= window_size:
+            event_sequences_dict[machine_id] = (events, timestamps, labels)
+    windows = build_event_windows(
+        event_sequences_dict, window_size=window_size, stride=1
     )
-    return df
+
+    text = [
+        str(window["timestamp"][0]) + " " + " ".join(map(str, window["events"]))
+        for window in windows
+    ]
+    labels = [int(any(window["label"])) for window in windows]
+    raw_dataset = {
+        "combined": text,
+        "label": labels,
+    }
+    return pd.DataFrame(raw_dataset)

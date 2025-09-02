@@ -56,13 +56,13 @@ class ALClassifier(nn.Module):
             vocab_size=vocab_size,
             hidden_size=hidden_size,
             num_hidden_layers=num_layers,
-            num_attention_heads=4,
+            num_attention_heads=num_attention_heads,
             intermediate_size=hidden_size * 4,
             max_position_embeddings=max_length,
-            type_vocab_size=1,
+            type_vocab_size=1,  # single
             pad_token_id=0,
             position_embedding_type="absolute",
-            use_cache=True,
+            use_cache=False,
             classifier_dropout=0.1,
         )
 
