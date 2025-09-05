@@ -1,34 +1,44 @@
 import pandas as pd
 
 
-def slice_dataframe(df, start, end):
-    return df.iloc[start:end].reset_index(drop=True)
-
-
-def build_event_windows(event_sequences, window_size=10, stride=1):
+def build_event_windows(event_sequences, window_size=5, min_window_size=3):
     windows = []
+    diff_timestamp = 300
 
     for machine_id, (events, timestamps, labels) in event_sequences.items():
-        if len(events) >= window_size:
-            for i in range(0, len(events) - window_size + 1, stride):
+        n = len(events)
+        if n >= window_size:
+            for i in range(n - window_size + 1):
                 window = events[i : i + window_size]
                 window_timestamps = timestamps[i : i + window_size]
 
-                # if timestamp diff > 30s, ignore
-                if window_timestamps[-1] - window_timestamps[0] > 30:
-                    continue
-
-                windows.append(
-                    {
-                        "machine_id": machine_id,
-                        "events": window,
-                        "timestamp": window_timestamps,
-                        "label": labels[i : i + window_size],
-                    }
-                )
+                if window_timestamps[-1] - window_timestamps[0] <= diff_timestamp:
+                    windows.append(
+                        {
+                            "machine_id": machine_id,
+                            "events": window,
+                            "timestamp": window_timestamps,
+                            "label": labels[i : i + window_size],
+                        }
+                    )
+                else:
+                    j = i
+                    while j < i + window_size:
+                        k = j + min_window_size
+                        while k <= i + window_size and timestamps[k - 1] - timestamps[j] <= diff_timestamp:
+                            windows.append(
+                                {
+                                    "machine_id": machine_id,
+                                    "events": events[j:k],
+                                    "timestamp": timestamps[j:k],
+                                    "label": labels[j:k],
+                                }
+                            )
+                            k += 1
+                        j += 1
+                    
         else:
-            # if timestamp diff > 30s, ignore
-            if timestamps[-1] - timestamps[0] <= 30:
+            if n > 0 and timestamps[-1] - timestamps[0] <= diff_timestamp:
                 windows.append(
                     {
                         "machine_id": machine_id,
@@ -40,23 +50,19 @@ def build_event_windows(event_sequences, window_size=10, stride=1):
     return windows
 
 
-def process_seq(df, window_size=5, slice_start=0, slice_end=None):
-    df = slice_dataframe(df, slice_start, slice_end)
+def process_seq(df, window_size=5):
     event_sequences = (
         df.groupby("machine")
         .agg({"event": list, "timestamp": list, "label": list})
         .reset_index()
     )
-    event_sequences["event_count"] = event_sequences["event"].apply(len)
-    event_sequences = event_sequences[event_sequences["event_count"] >= window_size]
     event_sequences_dict = {}
     for _, row in event_sequences.iterrows():
         machine_id = row["machine"]
         events = row["event"]
         timestamps = row["timestamp"]
         labels = row["label"]
-        if len(events) >= window_size:
-            event_sequences_dict[machine_id] = (events, timestamps, labels)
+        event_sequences_dict[machine_id] = (events, timestamps, labels)
     windows = build_event_windows(
         event_sequences_dict, window_size=window_size, stride=1
     )

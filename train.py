@@ -1,5 +1,4 @@
-from transformers import AutoTokenizer, get_linear_schedule_with_warmup
-
+from transformers import AutoTokenizer
 from small_text import (
     TransformersDataset,
     PoolBasedActiveLearner,
@@ -9,7 +8,6 @@ from small_text import (
     random_initialization_balanced,
 )
 from torch.utils.data import DataLoader
-import torch.nn as nn
 import numpy as np
 from sklearn.metrics import accuracy_score, confusion_matrix, f1_score
 import pandas as pd
@@ -18,7 +16,7 @@ import os
 import torch
 from datetime import datetime
 from utils import process_seq
-from model import ALDataset, ALClassifier, train_epoch
+from model import ALClassifier, ALPreTrainModel, ALDataset, pretrain
 
 
 def evaluate(active_learner, train, test):
@@ -66,10 +64,27 @@ def train_base_model(
     num_attention_heads=4,
     max_length=20,
 ):
-    LEARNING_RATE = 2e-5
-    WEIGHT_DECAY = 0.01
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-    model = ALClassifier(
+
+    # bert model with mlm head
+    pretrain_model = ALPreTrainModel(
+        vocab_size=tokenizer.vocab_size,
+        hidden_size=hidden_size,
+        num_layers=num_layers,
+        num_attention_heads=num_attention_heads,
+        max_length=max_length,
+    )
+
+    pretrain_model, best_pretrain_state = pretrain(
+        model=pretrain_model,
+        mlm_dataloader=train_loader,
+        num_epochs=epochs,
+        learning_rate=5e-5,
+        device=device,
+    )
+
+    # bert model with attached classification head
+    classifier_model = ALClassifier(
         vocab_size=tokenizer.vocab_size,
         hidden_size=hidden_size,
         num_layers=num_layers,
@@ -77,87 +92,35 @@ def train_base_model(
         num_attention_heads=num_attention_heads,
         max_length=max_length,
     )
-    model.to(device)
-    optimizer = torch.optim.AdamW(
-        model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY
-    )
 
-    criterion = nn.CrossEntropyLoss()
-
-    total_steps = len(train_loader) * epochs
-    scheduler = get_linear_schedule_with_warmup(
-        optimizer,
-        num_warmup_steps=total_steps // 10,  # 10% warmup
-        num_training_steps=total_steps,
-    )
-    print("Starting training...")
-    print("=" * 50)
-
-    train_losses = []
-    train_accuracies = []
-    # the model should not have knowledge of validation as these are "unlabelled"
-    # val_losses = []
-    # val_accuracies = []
-
-    best_train_accuracy = 0
-    best_model_state = None
-    for epoch in range(epochs):
-        print(f"\nEpoch {epoch + 1}/{epochs}")
-        print("-" * 30)
-
-        # Training
-        train_loss, train_acc = train_epoch(
-            model, train_loader, optimizer, scheduler, criterion, device
-        )
-        # Validation
-        # val_loss, val_acc, val_predictions, val_labels = validate_epoch(
-        #     model, valid_loader, criterion, device
-        # )
-        train_losses.append(train_loss)
-        train_accuracies.append(train_acc)
-        # val_losses.append(val_loss)
-        # val_accuracies.append(val_acc)
-
-        if train_acc > best_train_accuracy:
-            best_train_accuracy = train_acc
-            best_model_state = model.state_dict().copy()
-
-        # Print epoch summary
-        print(f"\nEpoch {epoch + 1} Summary:")
-        print(f"Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.4f}")
-        # print(f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f}")
-        print(f"Learning Rate: {scheduler.get_last_lr()[0]:.2e}")
-
-    print("\n" + "=" * 50)
-    print("Training completed!")
-    print(f"Best training accuracy: {best_train_accuracy:.4f}")
-
-    model.load_state_dict(best_model_state)
+    classifier_model.load_pretrained_weights(best_pretrain_state)
 
     os.makedirs(model_save_path, exist_ok=True)
 
     torch.save(
         {
-            "model_state_dict": best_model_state,
-            "optimizer_state_dict": optimizer.state_dict(),
+            "model_state_dict": classifier_model.state_dict(),
+            "pretrain_state_dict": best_pretrain_state,
             "epoch": epochs,
-            "best_train_accuracy": best_train_accuracy,
         },
         os.path.join(model_save_path, "pytorch_model.bin"),
     )
 
     model_config = {
         "vocab_size": tokenizer.vocab_size,
-        "hidden_size": model.hidden_size,
-        "num_attention_heads": model.num_attention_heads,
-        "num_layers": model.num_layers,
-        "num_classes": model.num_classes,
-        "max_length": model.max_length,
+        "hidden_size": classifier_model.hidden_size,
+        "num_attention_heads": classifier_model.num_attention_heads,
+        "num_layers": classifier_model.num_layers,
+        "num_classes": classifier_model.num_classes,
+        "max_length": classifier_model.max_length,
         "model_type": "bert",
     }
 
     with open(os.path.join(model_save_path, "config.json"), "w") as f:
         json.dump(model_config, f, indent=2)
+
+    print(f"Model saved to {model_save_path}")
+    return classifier_model
 
 
 def copy_vocab_file(tokenizer_path, model_save_path):
@@ -174,17 +137,17 @@ def train(
     tokenizer_path="./numeric_tokenizer",
     model_save_path="./pretrained_classifier",
     window_size=5,
+    dataset_batch_size=256,
     debug=False,
-    num_queries_al=10,
+    num_queries_al=3,
     num_samples_al=100,
-    label_0_sample_count=100,
-    label_1_sample_count=100,
+    ini_sample_count=100,
     max_length=20,
     mini_batch_size=64,
     hidden_size=512,
     num_layers=2,
     num_attention_heads=4,
-    base_model_train_epochs=10,
+    base_model_train_epochs=2,
 ):
     NUM_CLASSES = 2
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -203,19 +166,18 @@ def train(
     else:
         processed_df = dataset
     raw_dataset = processed_df.copy()
-    df_subset, df_rest, subset_indices = sample_base_model_data(
-        processed_df, label_0_sample_count, label_1_sample_count
-    )
 
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
     target_labels = np.arange(NUM_CLASSES)
-    X_entries = df_subset["combined"].values
-    y_entries = df_subset["label"].values
-    train_dataset = ALDataset(X_entries, y_entries, tokenizer, max_length=max_length)
+    X_entries = processed_df["combined"].values
+    train_dataset = ALDataset(
+        X_entries, tokenizer, max_length=max_length, mlm_prob=0.15
+    )
     train_base_model(
         train_dataset,
         device,
         tokenizer,
+        batch_size=dataset_batch_size,
         model_save_path=model_save_path,
         max_length=max_length,
         hidden_size=hidden_size,
@@ -225,14 +187,6 @@ def train(
     )
     copy_vocab_file(tokenizer_path, model_save_path)
 
-    rest_dataset = TransformersDataset.from_arrays(
-        df_rest["combined"],
-        df_rest["label"],
-        tokenizer,
-        max_length=max_length,
-        target_labels=target_labels,
-    )
-
     train_dataset = TransformersDataset.from_arrays(
         raw_dataset["combined"],
         raw_dataset["label"],
@@ -241,7 +195,9 @@ def train(
         target_labels=target_labels,
     )
 
-    indices_selected = random_initialization_balanced(rest_dataset.y, n_samples=500)
+    indices_selected = random_initialization_balanced(
+        train_dataset.y, n_samples=ini_sample_count
+    )
 
     transformer_model = TransformerModelArguments(model_save_path)
 
@@ -263,7 +219,6 @@ def train(
     active_learner.initialize_data(
         indices_selected,
         train_dataset.y[indices_selected],
-        indices_ignored=subset_indices,
     )
 
     train_acc, test_acc, f1, cm = evaluate(
@@ -273,12 +228,11 @@ def train(
     for i in range(num_queries_al):
         indices_queried = active_learner.query(num_samples=num_samples_al)
 
-        # replace with agent - get truth label
         y_true = train_dataset.y[indices_queried]
 
         active_learner.update(y_true)
         indices_selected = np.concatenate([indices_queried, indices_selected])
-
+        print(f"Iteration #{i} ({len(indices_selected)} samples)\n")
         train_acc, test_acc, f1, cm = evaluate(
             active_learner, train_dataset[indices_selected], train_dataset
         )
