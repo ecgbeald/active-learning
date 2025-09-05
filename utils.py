@@ -25,7 +25,10 @@ def build_event_windows(event_sequences, window_size=5, min_window_size=3):
                     j = i
                     while j < i + window_size:
                         k = j + min_window_size
-                        while k <= i + window_size and timestamps[k - 1] - timestamps[j] <= diff_timestamp:
+                        while (
+                            k <= i + window_size
+                            and timestamps[k - 1] - timestamps[j] <= diff_timestamp
+                        ):
                             windows.append(
                                 {
                                     "machine_id": machine_id,
@@ -36,7 +39,7 @@ def build_event_windows(event_sequences, window_size=5, min_window_size=3):
                             )
                             k += 1
                         j += 1
-                    
+
         else:
             if n > 0 and timestamps[-1] - timestamps[0] <= diff_timestamp:
                 windows.append(
@@ -63,9 +66,7 @@ def process_seq(df, window_size=5):
         timestamps = row["timestamp"]
         labels = row["label"]
         event_sequences_dict[machine_id] = (events, timestamps, labels)
-    windows = build_event_windows(
-        event_sequences_dict, window_size=window_size, stride=1
-    )
+    windows = build_event_windows(event_sequences_dict, window_size=window_size)
 
     text = [
         str(window["timestamp"][0]) + " " + " ".join(map(str, window["events"]))
